@@ -1,0 +1,263 @@
+#!/usr/bin/env ruby
+
+require "rubygems"
+require 'net/http'
+require "ostruct"
+require "abbrev"
+
+begin
+  require "colored"
+rescue LoadError
+end
+
+# Example
+# browse/sort-by-votes - All commands sorted by votes
+# tagged/163/grep - Commands tagged with 'grep', sorted by date (the default sort order)
+# matching/ssh/c3No - Search results for the query 'ssh' (note that the final segment is a base64-encoding of the search query)
+
+# api_comand_set = [ :browse, :tagged, :matching ]
+# api_format = [ :plaintext, :json, :rss ]
+# api_url = "http://www.commandlinefu.com/commands/<command-set>/<format>/"
+  
+class CommandLineFu
+  API_URL     = 'http://www.commandlinefu.com/commands'
+
+  # attr_reader :api_url
+
+  def initialize user_opt
+    @opt        = OpenStruct.new($default_opt.update(user_opt))
+    @command    = @opt.command
+    @format     = @opt.format
+    @sort_order = @opt.sort_order
+    unless @command == "list_tag"
+      build_url
+    end
+  end
+
+  def result
+    return list_tag if @command == "list_tag"
+
+
+    page_idx = (@opt.page - 1) * 25
+    url = @api_url + "/#{page_idx}"
+
+    if @opt.open_browser
+      system("open '#{url}'")
+      return
+    end
+    result = open_url(url)
+    return "#{@opt.search} NOT FOUND" if result.code != "200"
+
+    # each entry is separated by blank line , and we need to -1 for page headers.
+    b = result.body.split("\n\n")
+    header = b.shift
+    num_of_entries = b.size
+    body = b.join("\n\n")
+    unless num_of_entries.zero?
+      body = (defined?(Colored) ? colorize(body) : body)
+      body << "\n\n## Page(#{@opt.page}):#{page_idx}-#{page_idx+num_of_entries} #{url}".green
+      body << "\n##{header}".green
+    end
+    body
+  end
+
+  def open_url(url)
+    uri = URI.parse(url)
+    http = Net::HTTP.new(uri.host, uri.port)
+    request = Net::HTTP::Get.new(uri.request_uri)
+    http.request(request)
+  end
+  
+  private
+  def build_url
+    command_part = send("setup_#{@command}")
+    @api_url = "#{API_URL}/%s/%s" % [command_part, @sort_order ]
+    @api_url += "/#{@format}" if @format
+  end
+
+  def setup_browse
+    "#{@command}"
+  end
+
+  def setup_using
+    "#{@command}/#{@opt.search}"
+  end
+  alias_method :setup_by, :setup_using
+
+  def setup_matching
+    b64text = [@opt.search].pack("m").chomp
+    search = @opt.search.tr(' ','-')
+    "#{@command}/#{search}/#{b64text}"
+  end
+
+  def setup_tagged
+    tag = @opt.search
+    tag_id = tags[tag]
+    raise "Tag not found" unless tag_id
+    "#{@command}/#{tag_id}/#{tag}"
+  end
+
+  def colorize(string)
+    string.split("\n").map do |e|
+      e.chomp!
+      (e =~ /^#/) ? e.blue : e.gsub(/#{@opt.search}/){|m| Colored.colorize m, :foreground => 'magenta' }
+    end.join("\n")
+  end
+
+  def tag_file_is_too_old?
+    tag_file = File.expand_path @opt.tag_file
+    expire_limit = (60 * 60 * 24) * @opt.tag_expire_days
+    expire_limit < (Time.now - File.stat(tag_file).mtime)
+  end
+
+  def list_tag
+    candidate = tags.keys.grep(/#{@opt.search}/)
+    result = if candidate.size >= 1
+               colorize(candidate.join("\n"))
+             elsif candidate.size == 0
+               tags.keys
+             end
+    result
+  end
+
+  def tags
+    @tags ||= load_tags
+  end
+
+  def build_tag_file
+    tag_file = File.expand_path @opt.tag_file
+    h = extract_tag
+    File.open(tag_file, "wb"){ |f| Marshal.dump(h, f) }
+  end
+
+  # def extract_tag_nokogiri
+    # require 'nokogiri'
+    # h = {}
+    # url = 'http://www.commandlinefu.com/commands/browse'
+    # Nokogiri::HTML(open_url(url).body).xpath('//div//ul/li/a').map { |link|
+      # link['href']
+    # }.grep(%r|commands\/tagged|).each { |e|
+      # e.scan(%r|/commands/tagged/(\d+)/(.*)|) do |id, name|
+        # h[name] = id
+      # end
+    # }
+    # h
+  # end
+
+  def extract_tag
+    require "hpricot"
+    h = {}
+    url = 'http://www.commandlinefu.com/commands/browse'
+    Hpricot(open_url(url).body).
+      search("div ul li a").map {|e|
+      e.attributes['href']
+    }.each{ |e|
+      e.scan(%r|/commands/tagged/(\d+)/(.*)|) do |id, name|
+        h[name] = id
+      end
+    }
+    h
+  end
+
+  def load_tags
+    tag_file = File.expand_path @opt.tag_file
+    if not File.exist?(tag_file) or tag_file_is_too_old? or $NOCACHE
+      build_tag_file
+    end
+    File.open(tag_file, "rb"){ |f| Marshal.load f }
+  end
+
+end
+# $NOCACHE = true
+
+# TEST
+# [
+  # {:command => "browse"},
+  # {:command => "using", :search =>'find'},
+  # {:command => "by", :search =>'atoponce'},
+  # {:command => "matching", :search =>'find'},
+# ].each do |opt|
+  # puts "#### #{opt[:command]}"
+  # puts CommandLineFu.new(opt).api_url
+# end
+
+$default_opt = {
+  :page            => 1,
+  :command         => "browse",
+  :format          => "plaintext",
+  :sort_order      => "sort-by-votes",
+  :tag_file        => "~/.cmdline-fu.tags",
+  :tag_expire_days => 3,
+  :open_browser    => false,
+}
+
+command_table = Abbrev.abbrev(%w(list_tag browse using by tagged matching))
+
+# user_opt = {}
+# ARGV = %w(browse)
+# ARGV = %w(using find)
+# ARGV = %w(by atoponce)
+# ARGV = %w(matching find)
+
+
+user_opt = {}
+user_opt[:command] = command_table[ARGV.shift]
+
+if ARGV.last == 'o'
+  user_opt[:open_browser] = true
+  user_opt[:format] = false
+  ARGV.pop
+end
+
+page = ARGV.last.to_i
+user_opt[:page]  = page.zero? ? 1 :  page
+user_opt[:search]  = ARGV.shift
+
+
+PROGRAM_NAME = File.basename $0
+if user_opt[:command].nil?
+  puts <<-EOS
+
+  #{"Usage".bold}
+
+    #{PROGRAM_NAME} COMMAND [PAGE] [o]
+    
+      COMMAND: list_tag [MATCHER], browse, using WORD, by USER, tagged TAG, matching WORD
+      PAGE: 1-999 (defaut: 1)
+      o: 'o'pen in browser
+
+  #{"Example".bold}
+
+    #{PROGRAM_NAME} list_tag
+    #{PROGRAM_NAME} list_tag vm
+    #{PROGRAM_NAME} browse
+    #{PROGRAM_NAME} browse o
+    #{PROGRAM_NAME} using find
+    #{PROGRAM_NAME} by t9md
+    #{PROGRAM_NAME} tagged install
+    #{PROGRAM_NAME} matching find
+
+  #{"Abbreviation".bold}
+    Unique abbreviation for command is supported.
+
+    #{PROGRAM_NAME} l
+    #{PROGRAM_NAME} l vm
+    #{PROGRAM_NAME} br
+    #{PROGRAM_NAME} u find 2
+    #{PROGRAM_NAME} u find 2 o
+    #{PROGRAM_NAME} by t9md
+    #{PROGRAM_NAME} t install
+    #{PROGRAM_NAME} m find
+    
+  EOS
+  exit
+end
+
+begin
+  fu = CommandLineFu.new user_opt
+  ret = fu.result
+  puts ret if ret
+rescue => e
+  puts e
+  exit
+end
