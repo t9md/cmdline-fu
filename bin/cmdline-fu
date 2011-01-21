@@ -67,9 +67,9 @@ class CommandLineFu
   end
 
   def result
-    return list_tag if opt.command == "list_tag"
-    return renew_tag if opt.command == "renew_tag"
-
+    if %w(list_tag renew_tag version).include? opt.command
+      return send(opt.command)
+    end
     page_idx = (opt.page - 1) * 25
 
     url = "#{api_url}/#{page_idx}"
@@ -126,6 +126,7 @@ class CommandLineFu
 
   def command_set_for(command)
     { 
+      "version"  => "version",
       "browse"   => "browse",
       "using"    => "using/#{opt.search}",
       "by"       => "by/#{opt.search}",
@@ -141,6 +142,10 @@ class CommandLineFu
         "tagged/#{tag_id}/#{opt.search}"
       }.call
     }[command]
+  end
+
+  def version
+     return File.read(File.dirname(File.expand_path(__FILE__)) + "/../VERSION" )
   end
 
   def colorize(string)
@@ -232,7 +237,7 @@ end
   # puts CommandLineFu.new(opt).api_url
 # end
 
-command_table = Abbrev.abbrev(%w(list_tag browse using by tagged matching renew_tag))
+command_table = Abbrev.abbrev(%w(list_tag browse using by tagged matching renew_tag version))
 
 user_opt = {}
 user_opt[:colorize] = false if ARGV.delete('-n')

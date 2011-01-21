@@ -4,3 +4,4 @@ README.md
 Rakefile
 VERSION
 bin/cmdline-fu
+example/dot.cmdline-fu.conf
