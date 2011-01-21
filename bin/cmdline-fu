@@ -118,7 +118,8 @@ class CommandLineFu
   end
 
   def api_url
-    command_part = command_set_for(opt.command)
+    ret = command_set_for(opt.command)
+    command_part = ret.respond_to?(:call) ? ret.call : ret
     url = "#{API_URL}/#{command_part}/#{opt.sort_order}"
     url << "/#{opt.format}" if opt.format
     url
@@ -134,13 +135,13 @@ class CommandLineFu
         b64text = [opt.search].pack("m").chomp
         search  = opt.search.tr(' ','-')
         "matching/#{search}/#{b64text}"
-      }.call,
+      },
       "tagged" => lambda {
         unless tag_id = tags[opt.search]
           raise "Tag not found"
         end
         "tagged/#{tag_id}/#{opt.search}"
-      }.call
+      },
     }[command]
   end
 
