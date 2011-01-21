@@ -10,5 +10,5 @@ Echoe.new "cmdline-fu", File.read("./VERSION").chomp do |p|
   p.rubyforge_name = nil
   p.url = "http://github.com/t9md/cmdline-fu"
   p.runtime_dependencies << 'colored'
-  p.runtime_dependencies << 'hpricot >=0.8.2'
+  # p.runtime_dependencies << 'hpricot >=0.8.2'
 end

@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 
 require "rubygems"
-require 'net/http'
+require "net/http"
 require "ostruct"
 require "abbrev"
 
@@ -22,6 +22,7 @@ def try_require(lib, msg=nil)
     warn "\n#{msg}\n"
   end
 end
+
 try_require "colored"
   
 class CommandLineFu
@@ -49,18 +50,25 @@ class CommandLineFu
     :color_footer => 'green'
   }
 
-  # attr_reader :api_url
-
+  attr_reader :opt
   def initialize(user_opt)
-    @user_opt = user_opt
+    @opt = OpenStruct.new(DEFAULT_OPT.update(user_config).update(user_opt))
+    # p @opt
+    # exit
   end
 
-  def opt
-    @opt ||= OpenStruct.new(DEFAULT_OPT.update(@user_opt))
+  def user_config
+    user_config = File.expand_path "~/.cmdline-fu.conf"
+    if File.exist? user_config
+      return(eval File.read(user_config))
+    else
+      return {}
+    end
   end
 
   def result
     return list_tag if opt.command == "list_tag"
+    return renew_tag if opt.command == "renew_tag"
 
     page_idx = (opt.page - 1) * 25
 
@@ -81,6 +89,7 @@ class CommandLineFu
 
     unless num_of_entries.zero?
       footer = "\n\n## Page(#{opt.page}):#{page_idx}-#{page_idx+num_of_entries} #{url}\n#{header}"
+      p opt.colorize
       if opt.colorize
         body   = colorize(body)
         footer = footer.send(opt.color_footer)
@@ -92,7 +101,7 @@ class CommandLineFu
   def open_url(url)
     Net::HTTP.version_1_2
     uri     = URI.parse(url)
-    proxy   = URI.parse(ENV['HTTP_PROXY'] || "")
+    proxy   = URI.parse(ENV['HTTP_PROXY'] || opt.http_proxy_|| "")
     http    = Net::HTTP::Proxy(proxy.host, proxy.port).start(uri.host, uri.port)
     request = Net::HTTP::Get.new(uri.request_uri)
     http.request(request)
@@ -100,40 +109,38 @@ class CommandLineFu
   
   private
   def browse_cmd
+    return opt.browse_cmd if opt.browse_cmd
     case RUBY_PLATFORM.downcase
     when /darwin/ then "open"
     when /linux/  then "firefox"
-    when /mswin|linux/  then 'echo "NOT SUPPORTED for browse command"'
+    when /mswin/  then 'echo "NOT SUPPORTED for browse command"'
     end
   end
 
   def api_url
-    command_part = send("setup_#{opt.command}")
+    command_part = command_set_for(opt.command)
     url = "#{API_URL}/#{command_part}/#{opt.sort_order}"
     url << "/#{opt.format}" if opt.format
     url
   end
 
-  def setup_browse
-    "#{opt.command}"
-  end
-
-  def setup_using
-    "#{opt.command}/#{opt.search}"
-  end
-  alias_method :setup_by, :setup_using
-
-  def setup_matching
-    b64text = [opt.search].pack("m").chomp
-    search = opt.search.tr(' ','-')
-    "#{opt.command}/#{search}/#{b64text}"
-  end
-
-  def setup_tagged
-    tag = opt.search
-    tag_id = tags[tag]
-    raise "Tag not found" unless tag_id
-    "#{opt.command}/#{tag_id}/#{tag}"
+  def command_set_for(command)
+    { 
+      "browse"   => "browse",
+      "using"    => "using/#{opt.search}",
+      "by"       => "by/#{opt.search}",
+      "matching" => lambda {
+        b64text = [opt.search].pack("m").chomp
+        search  = opt.search.tr(' ','-')
+        "matching/#{search}/#{b64text}"
+      }.call,
+      "tagged" => lambda {
+        unless tag_id = tags[opt.search]
+          raise "Tag not found"
+        end
+        "tagged/#{tag_id}/#{opt.search}"
+      }.call
+    }[command]
   end
 
   def colorize(string)
@@ -144,12 +151,6 @@ class CommandLineFu
         Colored.colorize m, :foreground => opt.color_match
       }
     end.join("\n")
-  end
-
-  def tag_file_is_too_old?
-    tag_file = File.expand_path opt.tag_file
-    expire_limit = (60 * 60 * 24) * opt.tag_expire_days
-    expire_limit < (Time.now - File.stat(tag_file).mtime)
   end
 
   def list_tag
@@ -168,9 +169,10 @@ class CommandLineFu
 
   def build_tag_file
     tag_file = File.expand_path opt.tag_file
-    h = extract_tag
-    File.open(tag_file, "wb"){ |f| Marshal.dump(h, f) }
+    File.open(tag_file, "wb"){ |f| Marshal.dump(scrape_tag, f) }
+    return
   end
+  alias_method :renew_tag, :build_tag_file
 
   # def extract_tag_nokogiri
     # require 'nokogiri'
@@ -186,7 +188,7 @@ class CommandLineFu
     # h
   # end
 
-  def extract_tag
+  def scrape_tag
     ret = try_require "hpricot", <<-EOS
 
     if you want to TAG based query, install 'hpricot'
@@ -212,14 +214,12 @@ class CommandLineFu
 
   def load_tags
     tag_file = File.expand_path opt.tag_file
-    if not File.exist?(tag_file) or tag_file_is_too_old? or $NOCACHE
-      build_tag_file
+    unless File.exist?(tag_file)
+      build_tag_file 
     end
     File.open(tag_file, "rb"){ |f| Marshal.load f }
   end
-
 end
-# $NOCACHE = true
 
 # TEST
 # [
@@ -232,26 +232,9 @@ end
   # puts CommandLineFu.new(opt).api_url
 # end
 
-# $default_opt = {
-  # :page            => 1,
-  # :command         => "browse",
-  # :format          => "plaintext",
-  # :sort_order      => "sort-by-votes",
-  # :tag_file        => "~/.cmdline-fu.tags",
-  # :tag_expire_days => 3,
-  # :open_browser    => false,
-# }
-
-command_table = Abbrev.abbrev(%w(list_tag browse using by tagged matching))
-
-# user_opt = {}
-# ARGV = %w(browse)
-# ARGV = %w(using find)
-# ARGV = %w(by atoponce)
-# ARGV = %w(matching find)
+command_table = Abbrev.abbrev(%w(list_tag browse using by tagged matching renew_tag))
 
 user_opt = {}
-
 user_opt[:colorize] = false if ARGV.delete('-n')
 user_opt[:command] = command_table[ARGV.shift]
 
@@ -280,6 +263,7 @@ if user_opt[:command].nil?
 
   #{"Example".bold}
 
+    #{PROGRAM_NAME} renew_tag
     #{PROGRAM_NAME} list_tag
     #{PROGRAM_NAME} list_tag vm
     #{PROGRAM_NAME} browse
@@ -292,6 +276,7 @@ if user_opt[:command].nil?
   #{"Abbreviation".bold}
     Unique abbreviation for command is supported.
 
+    #{PROGRAM_NAME} r
     #{PROGRAM_NAME} l
     #{PROGRAM_NAME} l vm
     #{PROGRAM_NAME} br
